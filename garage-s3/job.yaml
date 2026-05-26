@@ -1,0 +1,73 @@
+#Job to assign layout to the garage instance
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: garage-init-sa
+  namespace: garage
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: garage-init-role
+  namespace: garage
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/exec"]
+    verbs: ["get", "list", "create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: garage-init-rolebinding
+  namespace: garage
+subjects:
+  - kind: ServiceAccount
+    name: garage-init-sa
+    namespace: garage
+roleRef:
+  kind: Role
+  name: garage-init-role
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: garage-init
+  namespace: garage
+  annotations:
+    argocd.argoproj.io/hook: Sync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  template:
+    spec:
+      serviceAccountName: garage-init-sa
+      containers:
+        - name: init
+          image: bitnami/kubectl:latest
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -e
+              echo "Waiting for garage-0 pod to be ready..."
+              kubectl wait --for=condition=ready pod/garage-0 -n garage --timeout=300s
+
+              echo "Checking layout status..."
+              LAYOUT_OUTPUT=$(kubectl exec -n garage garage-0 -- /garage layout show)
+
+              if echo "$LAYOUT_OUTPUT" | grep -q "Current cluster layout version: 0"; then
+                echo "Layout not initialized, proceeding with setup..."
+                
+                NODE_ID=$(kubectl exec -n garage garage-0 -- /garage status | grep -v "ROLE" | grep -v "====" | grep -v "^ID" | awk 'NF && !/^[[:space:]]*$/ {print $1; exit}')
+                
+                echo "Assigning layout to node $NODE_ID"
+                kubectl exec -n garage garage-0 -- /garage layout assign "$NODE_ID" -z dc1 -c 1G -t garage-0
+                
+                echo "Applying layout..."
+                kubectl exec -n garage garage-0 -- /garage layout apply --version 1
+                
+                echo "Garage layout applied successfully!"
+              else
+                echo "Layout already initialized, skipping."
+              fi
+      restartPolicy: OnFailure

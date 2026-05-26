@@ -1,0 +1,74 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: vaultwarden-backup
+  namespace: vaultwarden
+spec:
+  schedule: "0 2 * * *" # Runs every day at 2:00 AM
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          # IMPORTANT: Force the backup job onto the same node as Vaultwarden 
+          # so it can mount the ReadWriteOnce PVC.
+          affinity:
+            podAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                - labelSelector:
+                    matchExpressions:
+                      - key: app
+                        operator: In
+                        values:
+                          - vaultwarden
+                  topologyKey: kubernetes.io/hostname
+          
+          # InitContainer: Safely dump SQLite to avoid corrupted states
+          initContainers:
+            - name: sqlite-dump
+              image: alpine:latest
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  apk add --no-cache sqlite
+                  echo "Creating application-consistent SQLite backup..."
+                  sqlite3 /data/db.sqlite3 ".backup '/backup/db-$(date +%F).sqlite3'"
+              volumeMounts:
+                - name: vaultwarden-data
+                  mountPath: /data
+                  readOnly: true
+                - name: backup-temp
+                  mountPath: /backup
+
+          # Main Container: Push the dumped file to Garage (and later R2)
+          containers:
+            - name: s3-sync
+              image: amazon/aws-cli:latest
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  echo "Syncing backup to Garage S3..."
+                  aws s3 sync /backup s3://vaultwarden-backups/ \
+                    --endpoint-url http://garage.garage.svc.cluster.local:3900
+              env:
+                - name: AWS_ACCESS_KEY_ID
+                  value: "your_garage_access_key" # In production, use valueFrom secret
+                - name: AWS_SECRET_ACCESS_KEY
+                  value: "your_garage_secret_key"
+                - name: AWS_DEFAULT_REGION
+                  value: "garage"
+              volumeMounts:
+                - name: backup-temp
+                  mountPath: /backup
+
+          restartPolicy: OnFailure
+          volumes:
+            - name: vaultwarden-data
+              persistentVolumeClaim:
+                claimName: vaultwarden-pvc # Match your actual PVC name
+            - name: backup-temp
+              emptyDir: {}

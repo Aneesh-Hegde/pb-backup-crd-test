@@ -1,0 +1,20 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: vaultwarden
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/Aneesh-Hegde/pb-backup-crd.git
+    targetRevision: main
+    path: argocd/vaultwarden
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: vaultwarden
+  syncPolicy:
+    automated:
+      enabled: true
+      prune: true
+      selfHeal: true

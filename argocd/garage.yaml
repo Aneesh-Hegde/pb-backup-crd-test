@@ -1,0 +1,20 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: garage-s3
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/Aneesh-Hegde/pb-backup-crd.git
+    targetRevision: main
+    path: argocd/garage-s3
+    directory:
+      recurse: true
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: garage
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

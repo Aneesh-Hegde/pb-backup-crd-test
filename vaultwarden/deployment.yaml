@@ -1,0 +1,64 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vaultwarden
+  namespace: vaultwarden
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vaultwarden
+  template:
+    metadata:
+      labels:
+        app: vaultwarden
+    spec:
+      containers:
+        - name: vaultwarden
+          image: vaultwarden/server:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8081
+          env:
+            # --- SSO CONFIGURATION ---
+            - name: SSO_ENABLED
+              value: "true"
+            - name: SSO_AUTHORITY
+              value: "https://auth.pointblank.club/application/o/vaultwarden/"
+            - name: SSO_CLIENT_ID
+              value: "U0mHuD8EmkZLTwyhjA25xuxa72cGTe5gZh20c53i"
+            - name: SSO_CLIENT_SECRET
+              value: "i9NomFJDXLUHoqI7GE4IANeDNx4IW8gAzrPHVN876CBuHaOvLHboHBEkOt9v0K0SyIBewp4DlQXqODmpizDPiz70Om6P1t6vjFEAoiAIiYaTffayyMI9mJhIMAq7wMtP"
+            - name: SSO_SCOPES
+              value: "openid profile email offline_access"
+            - name: SSO_ALLOW_UNKNOWN_EMAIL_VERIFICATION
+              value: "false"
+            - name: SSO_CLIENT_CACHE_EXPIRATION
+              value: "0"
+            - name: SSO_SIGNUPS_MATCH_EMAIL
+              value: "true"
+
+            # --- server CONFIGURATION ---
+            - name: ROCKET_PORT #env if need to run on different port other then 80
+              value: "8081"
+            - name: DOMAIN
+              value: "https://vault.pointblank.club"
+            - name: SIGNUPS_ALLOWED
+              value: "true" #keep it false when new registration needs to be blocked
+            - name: INVITATIONS_ALLOWED
+              value: "true"
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "1000m"
+              memory: "256Mi"
+
+          volumeMounts:
+            - name: vaultwarden-vol
+              mountPath: /data
+      volumes:
+        - name: vaultwarden-vol
+          persistentVolumeClaim:
+            claimName: vaultwarden-pvc
