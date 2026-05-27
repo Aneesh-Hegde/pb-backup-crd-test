@@ -56,15 +56,20 @@ spec:
                     --endpoint-url http://garage.garage.svc.cluster.local:3900
               env:
                 - name: AWS_ACCESS_KEY_ID
-                  value: "your_garage_access_key" # In production, use valueFrom secret
+                  valueFrom:
+                    secretKeyRef:
+                      name: garage-s3-credentials
+                      key: AWS_ACCESS_KEY_ID
                 - name: AWS_SECRET_ACCESS_KEY
-                  value: "your_garage_secret_key"
+                  valueFrom:
+                    secretKeyRef:
+                      name: garage-s3-credentials
+                      key: AWS_SECRET_ACCESS_KEY
                 - name: AWS_DEFAULT_REGION
                   value: "garage"
               volumeMounts:
                 - name: backup-temp
                   mountPath: /backup
-
           restartPolicy: OnFailure
           volumes:
             - name: vaultwarden-data

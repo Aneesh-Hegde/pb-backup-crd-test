@@ -11,7 +11,7 @@ spec:
   ingressClassName: nginx
   tls:
     - hosts:
-        - vault.pointblank.club
+        - vault.celebi.app
       secretName: vaultwarden-tls
   rules:
     - host: vault.pointblank.club
