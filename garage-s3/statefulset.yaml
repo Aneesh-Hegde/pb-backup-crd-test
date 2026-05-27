@@ -7,7 +7,7 @@ metadata:
     argocd.argoproj.io/sync-wave: "0"
 spec:
   serviceName: garage
-  replicas: 1
+  replicas: 3
   selector:
     matchLabels:
       app: garage
@@ -16,6 +16,16 @@ spec:
       labels:
         app: garage
     spec:
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchExpressions:
+                  - key: app
+                    operator: In
+                    values:
+                      - garage
+              topologyKey: "kubernetes.io/hostname"
       containers:
         - name: garage
           image: dxflrs/garage:v2.2.0

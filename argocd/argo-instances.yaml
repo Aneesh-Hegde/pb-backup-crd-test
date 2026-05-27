@@ -1,0 +1,20 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: pb-backup-instances
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: 'https://github.com/Aneesh-Hegde/pb-backup-crd.git'
+    targetRevision: main
+    # This path contains your actual vaultwarden-backup.yaml
+    path: instances 
+  destination:
+    server: 'https://kubernetes.default.svc'
+    # Deploying to vaultwarden namespace so the pod can mount the Vaultwarden PVC
+    namespace: vaultwarden
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
