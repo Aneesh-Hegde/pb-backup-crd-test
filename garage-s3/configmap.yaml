@@ -5,26 +5,25 @@ metadata:
   namespace: garage
 data:
   garage.toml: |
-    metadata_dir = "/tmp/meta"
-    data_dir = "/tmp/data"
+    metadata_dir = "/var/lib/garage/meta"
+    data_dir = "/var/lib/garage/data"
     db_engine = "sqlite"
 
-    replication_factor = 1
+    replication_factor = 3
 
-    rpc_bind_addr = "[::]:3901"
-    rpc_public_addr = "garage.garage.svc.cluster.local:3901"
+    rpc_bind_addr = "0.0.0.0:3901"
     rpc_secret = "0abeb5f41333fcc957de20dcdaeb2b809fd5fb7cb60ced25c0942d8e3f56bd6d"
 
     [s3_api]
     s3_region = "garage"
-    api_bind_addr = "[::]:3900"
+    api_bind_addr = "0.0.0.0:3900"
     root_domain = ""
 
     [s3_web]
-    bind_addr = "[::]:3902"
+    bind_addr = "0.0.0.0:3902"
     root_domain = ".web.garage.localhost"
     index = "index.html"
 
     [admin]
-    api_bind_addr = "[::]:3903"
+    api_bind_addr = "0.0.0.0:3903"
     admin_token = "jOd8jyxLSbrgjwN7M59paKIvNkeKfh6XVpJomvhQncqd53yESkoXw9vXI15jPRJk"
