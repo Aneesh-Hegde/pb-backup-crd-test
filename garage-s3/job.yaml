@@ -1,3 +1,4 @@
+#Job to assign layout to the garage instance
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -5,27 +6,26 @@ metadata:
   namespace: garage
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
+kind: Role
 metadata:
   name: garage-init-role
+  namespace: garage
 rules:
   - apiGroups: [""]
     resources: ["pods", "pods/exec"]
     verbs: ["get", "list", "create"]
-  - apiGroups: [""]
-    resources: ["secrets"]
-    verbs: ["get", "list", "create", "patch", "update"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
+kind: RoleBinding
 metadata:
   name: garage-init-rolebinding
+  namespace: garage
 subjects:
   - kind: ServiceAccount
     name: garage-init-sa
     namespace: garage
 roleRef:
-  kind: ClusterRole
+  kind: Role
   name: garage-init-role
   apiGroup: rbac.authorization.k8s.io
 ---
@@ -49,51 +49,80 @@ spec:
           args:
             - |
               set -e
-              echo "Waiting for garage-0 pod to be ready..."
-              kubectl wait --for=condition=ready pod/garage-0 -n garage --timeout=300s
 
-              echo "Checking layout status..."
+              echo "Waiting for all 3 Garage pods to be ready..."
+              for i in 0 1 2; do
+                kubectl wait --for=condition=ready pod/garage-$i -n garage --timeout=300s
+              done
+
+              # Get hex IDs only
+              NODE_0=$(kubectl exec -n garage garage-0 -- /garage node id -q | cut -d@ -f1)
+              NODE_1=$(kubectl exec -n garage garage-1 -- /garage node id -q | cut -d@ -f1)
+              NODE_2=$(kubectl exec -n garage garage-2 -- /garage node id -q | cut -d@ -f1)
+
+              # Get real IPs directly from Kubernetes
+              IP_0=$(kubectl get pod garage-0 -n garage -o jsonpath='{.status.podIP}')
+              IP_1=$(kubectl get pod garage-1 -n garage -o jsonpath='{.status.podIP}')
+              IP_2=$(kubectl get pod garage-2 -n garage -o jsonpath='{.status.podIP}')
+
+              echo "garage-0: $NODE_0 @ $IP_0"
+              echo "garage-1: $NODE_1 @ $IP_1"
+              echo "garage-2: $NODE_2 @ $IP_2"
+
+              echo "Connecting garage-1 to garage-0..."
+              kubectl exec -n garage garage-1 -- /garage node connect "${NODE_0}@${IP_0}:3901"
+
+              echo "Connecting garage-2 to garage-0..."
+              kubectl exec -n garage garage-2 -- /garage node connect "${NODE_0}@${IP_0}:3901"
+
+              sleep 5
+
+              echo "=== Cluster status after peering ==="
+              kubectl exec -n garage garage-0 -- /garage status
+
+              echo "Checking layout..."
               LAYOUT_OUTPUT=$(kubectl exec -n garage garage-0 -- /garage layout show)
 
-              if echo "$LAYOUT_OUTPUT" | grep -q "Current cluster layout version: 0"; then
-                echo "Layout not initialized, proceeding with setup..."
+              if echo "$LAYOUT_OUTPUT" | grep -q "NO ROLE ASSIGNED"; then
+                echo "Assigning layout roles based on physical topology..."
+
+                # Get the physical K8s Node names where the pods are running
+                K8S_NODE_0=$(kubectl get pod garage-0 -n garage -o jsonpath='{.spec.nodeName}')
+                K8S_NODE_1=$(kubectl get pod garage-1 -n garage -o jsonpath='{.spec.nodeName}')
+                K8S_NODE_2=$(kubectl get pod garage-2 -n garage -o jsonpath='{.spec.nodeName}')
+
+                # Extract actual availability zone labels, with a fallback if labels are missing
+                ZONE_0=$(kubectl get node "$K8S_NODE_0" -o jsonpath='{.metadata.labels.topology\.kubernetes\.io/zone}')
+                ZONE_0=${ZONE_0:-z1} 
+
+                ZONE_1=$(kubectl get node "$K8S_NODE_1" -o jsonpath='{.metadata.labels.topology\.kubernetes\.io/zone}')
+                ZONE_1=${ZONE_1:-z2}
+
+                ZONE_2=$(kubectl get node "$K8S_NODE_2" -o jsonpath='{.metadata.labels.topology\.kubernetes\.io/zone}')
+                ZONE_2=${ZONE_2:-z3}
+
+                echo "Detected Zones -> Node 0: $ZONE_0, Node 1: $ZONE_1, Node 2: $ZONE_2"
+
+                # Feed the real zones into Garage
+                kubectl exec -n garage garage-0 -- \
+                  /garage layout assign "$NODE_0" -z "$ZONE_0" -c 1G -t garage-0
+                kubectl exec -n garage garage-0 -- \
+                  /garage layout assign "$NODE_1" -z "$ZONE_1" -c 1G -t garage-1
+                kubectl exec -n garage garage-0 -- \
+                  /garage layout assign "$NODE_2" -z "$ZONE_2" -c 1G -t garage-2
+
+                # Dynamically look for the staged version to apply
+                STAGED_VERSION=$(kubectl exec -n garage garage-0 -- /garage layout show | grep -i "staged for configuration" | awk '{print $NF}' | tr -d '[:punct:]' || echo 1)
                 
-                NODE_ID=$(kubectl exec -n garage garage-0 -- /garage status | grep -v "ROLE" | grep -v "====" | grep -v "^ID" | awk 'NF && !/^[[:space:]]*$/ {print $1; exit}')
-                
-                echo "Assigning layout to node $NODE_ID"
-                kubectl exec -n garage garage-0 -- /garage layout assign "$NODE_ID" -z dc1 -c 1G -t garage-0
-                
-                echo "Applying layout..."
-                kubectl exec -n garage garage-0 -- /garage layout apply --version 1
-                
-                echo "Garage layout applied successfully!"
+                echo "Applying layout version: ${STAGED_VERSION}"
+                kubectl exec -n garage garage-0 -- /garage layout apply --version "${STAGED_VERSION}"
+
+                echo "Waiting for ring sync..."
+                sleep 5
               else
                 echo "Layout already initialized, skipping."
               fi
 
-              # --- AUTOMATED S3 BUCKET & KEY PROVISIONING ---
-              echo "Checking if vaultwarden-backups bucket exists..."
-              kubectl exec -n garage garage-0 -- /garage bucket info vaultwarden-backups || kubectl exec -n garage garage-0 -- /garage bucket create vaultwarden-backups
-
-              echo "Checking if vaultwarden-key exists..."
-              if ! kubectl exec -n garage garage-0 -- /garage key list | grep -q vaultwarden-key; then
-                echo "Generating new S3 keys..."
-                KEY_OUTPUT=$(kubectl exec -n garage garage-0 -- /garage key create vaultwarden-key)
-                
-                ACCESS_KEY=$(echo "$KEY_OUTPUT" | grep "Key ID:" | awk '{print $3}')
-                SECRET_KEY=$(echo "$KEY_OUTPUT" | grep "Secret key:" | awk '{print $3}')
-
-                echo "Granting bucket permissions to the key..."
-                kubectl exec -n garage garage-0 -- /garage bucket allow vaultwarden-backups --read --write --owner --key vaultwarden-key
-
-                echo "Pushing S3 credentials to a Kubernetes Secret in the vaultwarden namespace..."
-                kubectl create secret generic garage-s3-credentials -n vaultwarden \
-                  --from-literal=AWS_ACCESS_KEY_ID=$ACCESS_KEY \
-                  --from-literal=AWS_SECRET_ACCESS_KEY=$SECRET_KEY \
-                  --dry-run=client -o yaml | kubectl apply -f -
-                
-                echo "S3 automated provisioning complete!"
-              else
-                echo "S3 key already exists. Skipping provisioning."
-              fi
+              echo "=== Final cluster status ==="
+              kubectl exec -n garage garage-0 -- /garage status
       restartPolicy: OnFailure

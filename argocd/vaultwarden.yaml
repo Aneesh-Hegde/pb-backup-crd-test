@@ -6,9 +6,9 @@ metadata:
 spec:
   project: default
   source:
-    repoURL: https://github.com/Aneesh-Hegde/pb-backup-crd-test.git
+    repoURL: 'https://github.com/Aneesh-Hegde/pb-backup-crd-test.git'
     targetRevision: main
-    path: argocd/vaultwarden
+    path: vaultwarden
 
   destination:
     server: https://kubernetes.default.svc

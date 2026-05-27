@@ -1,0 +1,11 @@
+resources:
+- manager.yaml
+- garage-secret.yaml
+generatorOptions:
+  disableNameSuffixHash: true
+
+# ADD THIS BLOCK TO THE BOTTOM:
+images:
+  - name: controller
+    newName: pb-backup-controller
+    newTag: v0.1.0
