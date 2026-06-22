@@ -13,7 +13,7 @@ metadata:
 rules:
   - apiGroups: [""]
     resources: ["pods", "pods/exec"]
-    verbs: ["get", "list", "create"]
+    verbs: ["get", "list", "create","watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -29,15 +29,36 @@ roleRef:
   name: garage-init-role
   apiGroup: rbac.authorization.k8s.io
 ---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: garage-node-reader
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: garage-node-reader-binding
+subjects:
+  - kind: ServiceAccount
+    name: garage-init-sa
+    namespace: garage
+roleRef:
+  kind: ClusterRole
+  name: garage-node-reader
+  apiGroup: rbac.authorization.k8s.io
+---
 apiVersion: batch/v1
 kind: Job
 metadata:
   name: garage-init
   namespace: garage
   annotations:
-    argocd.argoproj.io/hook: Sync
-    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
-    argocd.argoproj.io/sync-wave: "1"
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: HookSucceeded
 spec:
   template:
     spec:
@@ -50,79 +71,78 @@ spec:
             - |
               set -e
 
-              echo "Waiting for all 3 Garage pods to be ready..."
-              for i in 0 1 2; do
-                kubectl wait --for=condition=ready pod/garage-$i -n garage --timeout=300s
-              done
+              echo "Waiting for all Garage pods to be ready..."
+              kubectl wait --for=condition=ready pod -l app=garage -n garage --timeout=300s
 
-              # Get hex IDs only
+              # Fetch the Hex IDs for peering
               NODE_0=$(kubectl exec -n garage garage-0 -- /garage node id -q | cut -d@ -f1)
-              NODE_1=$(kubectl exec -n garage garage-1 -- /garage node id -q | cut -d@ -f1)
-              NODE_2=$(kubectl exec -n garage garage-2 -- /garage node id -q | cut -d@ -f1)
-
-              # Get real IPs directly from Kubernetes
               IP_0=$(kubectl get pod garage-0 -n garage -o jsonpath='{.status.podIP}')
-              IP_1=$(kubectl get pod garage-1 -n garage -o jsonpath='{.status.podIP}')
-              IP_2=$(kubectl get pod garage-2 -n garage -o jsonpath='{.status.podIP}')
 
-              echo "garage-0: $NODE_0 @ $IP_0"
-              echo "garage-1: $NODE_1 @ $IP_1"
-              echo "garage-2: $NODE_2 @ $IP_2"
-
-              echo "Connecting garage-1 to garage-0..."
+              echo "Ensuring nodes are peered using exact Pod IPs..."
               kubectl exec -n garage garage-1 -- /garage node connect "${NODE_0}@${IP_0}:3901"
-
-              echo "Connecting garage-2 to garage-0..."
               kubectl exec -n garage garage-2 -- /garage node connect "${NODE_0}@${IP_0}:3901"
 
               sleep 5
 
-              echo "=== Cluster status after peering ==="
-              kubectl exec -n garage garage-0 -- /garage status
+              echo "Reconciling cluster layout (assigning active pods & removing dead nodes)..."
 
-              echo "Checking layout..."
-              LAYOUT_OUTPUT=$(kubectl exec -n garage garage-0 -- /garage layout show)
+              # 1. Collect active node IDs first so we never accidentally remove a live pod
+              ACTIVE_IDS=""
+              for POD in garage-0 garage-1 garage-2; do
+                ID=$(kubectl exec -n garage $POD -- /garage node id -q | cut -d@ -f1)
+                ACTIVE_IDS="$ACTIVE_IDS $ID"
+              done
+              echo "Active node IDs:$ACTIVE_IDS"
 
-              if echo "$LAYOUT_OUTPUT" | grep -q "NO ROLE ASSIGNED"; then
-                echo "Assigning layout roles based on physical topology..."
+              # 2. Remove ghost/failed nodes BEFORE assigning, so they don't clobber assignments
+              FAILED_NODES=$(kubectl exec -n garage garage-0 -- /garage status \
+                | awk '/==== FAILED NODES ====/{flag=1; next} flag && $1 ~ /^[0-9a-f]{16}$/ {print $1}')
 
-                # Get the physical K8s Node names where the pods are running
-                K8S_NODE_0=$(kubectl get pod garage-0 -n garage -o jsonpath='{.spec.nodeName}')
-                K8S_NODE_1=$(kubectl get pod garage-1 -n garage -o jsonpath='{.spec.nodeName}')
-                K8S_NODE_2=$(kubectl get pod garage-2 -n garage -o jsonpath='{.spec.nodeName}')
-
-                # Extract actual availability zone labels, with a fallback if labels are missing
-                ZONE_0=$(kubectl get node "$K8S_NODE_0" -o jsonpath='{.metadata.labels.topology\.kubernetes\.io/zone}')
-                ZONE_0=${ZONE_0:-z1} 
-
-                ZONE_1=$(kubectl get node "$K8S_NODE_1" -o jsonpath='{.metadata.labels.topology\.kubernetes\.io/zone}')
-                ZONE_1=${ZONE_1:-z2}
-
-                ZONE_2=$(kubectl get node "$K8S_NODE_2" -o jsonpath='{.metadata.labels.topology\.kubernetes\.io/zone}')
-                ZONE_2=${ZONE_2:-z3}
-
-                echo "Detected Zones -> Node 0: $ZONE_0, Node 1: $ZONE_1, Node 2: $ZONE_2"
-
-                # Feed the real zones into Garage
-                kubectl exec -n garage garage-0 -- \
-                  /garage layout assign "$NODE_0" -z "$ZONE_0" -c 1G -t garage-0
-                kubectl exec -n garage garage-0 -- \
-                  /garage layout assign "$NODE_1" -z "$ZONE_1" -c 1G -t garage-1
-                kubectl exec -n garage garage-0 -- \
-                  /garage layout assign "$NODE_2" -z "$ZONE_2" -c 1G -t garage-2
-
-                # Dynamically look for the staged version to apply
-                STAGED_VERSION=$(kubectl exec -n garage garage-0 -- /garage layout show | grep -i "staged for configuration" | awk '{print $NF}' | tr -d '[:punct:]' || echo 1)
-                
-                echo "Applying layout version: ${STAGED_VERSION}"
-                kubectl exec -n garage garage-0 -- /garage layout apply --version "${STAGED_VERSION}"
-
-                echo "Waiting for ring sync..."
-                sleep 5
+              if [ -n "$FAILED_NODES" ]; then
+                for DEAD_NODE in $FAILED_NODES; do
+                  # Guard: never remove a node that is actually a live pod
+                  if echo "$ACTIVE_IDS" | grep -q "$DEAD_NODE"; then
+                    echo "Skipping $DEAD_NODE — it is a live pod, not a ghost"
+                    continue
+                  fi
+                  echo "Removing failed ghost node: $DEAD_NODE"
+                  kubectl exec -n garage garage-0 -- /garage layout remove "$DEAD_NODE"
+                done
               else
-                echo "Layout already initialized, skipping."
+                echo "No failed ghost nodes found."
               fi
 
-              echo "=== Final cluster status ==="
-              kubectl exec -n garage garage-0 -- /garage status
+              # 3. Assign all currently active pods to the layout
+              for POD in garage-0 garage-1 garage-2; do
+                NODE_ID=$(kubectl exec -n garage $POD -- /garage node id -q | cut -d@ -f1)
+                K8S_NODE=$(kubectl get pod $POD -n garage -o jsonpath='{.spec.nodeName}')
+                ZONE=$(kubectl get node "$K8S_NODE" -o jsonpath='{.metadata.labels.topology\.kubernetes\.io/zone}' || echo "z1")
+
+                kubectl exec -n garage garage-0 -- /garage layout assign "$NODE_ID" -z "$ZONE" -c 1G -t $POD
+              done
+
+              # 4. Check if any changes were actually staged and apply them
+              LAYOUT_OUTPUT=$(kubectl exec -n garage garage-0 -- /garage layout show)
+
+              if echo "$LAYOUT_OUTPUT" | grep -q "garage layout apply --version"; then
+                # Extract the exact version number required to commit the staged changes
+                NEXT_VERSION=$(echo "$LAYOUT_OUTPUT" | awk '/garage layout apply --version/ {print $NF}')
+                echo "Changes detected. Applying staged layout version ${NEXT_VERSION}..."
+                kubectl exec -n garage garage-0 -- /garage layout apply --version "$NEXT_VERSION"
+              else
+                echo "Layout is already perfectly synced and healthy. Skipping cleanly."
+                # Still need the current version for skip-dead-nodes below
+                NEXT_VERSION=$(echo "$LAYOUT_OUTPUT" | awk '/Current cluster layout version:/ {print $NF}')
+              fi
+
+              # 5. If ghost nodes are still draining, force-skip them so the cluster goes healthy
+              STILL_FAILED=$(kubectl exec -n garage garage-0 -- /garage status \
+                | awk '/==== FAILED NODES ====/{flag=1; next} flag && $1 ~ /^[0-9a-f]{16}$/ {print $1}')
+
+              if [ -n "$STILL_FAILED" ]; then
+                echo "Dead nodes still draining after layout apply, forcing skip-dead-nodes at version ${NEXT_VERSION}..."
+                kubectl exec -n garage garage-0 -- /garage layout skip-dead-nodes --version "$NEXT_VERSION" --allow-missing-data
+              else
+                echo "No dead nodes remaining. Cluster should be healthy."
+              fi
       restartPolicy: OnFailure

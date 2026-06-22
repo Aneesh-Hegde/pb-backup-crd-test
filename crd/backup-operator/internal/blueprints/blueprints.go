@@ -128,25 +128,6 @@ gzip -c $MOUNT_PATH/dump.rdb > /workspace/dump.archive
 echo "Redis snapshot completed successfully."
 `,
 	},
-	{
-		Name:  "backup-blueprint-mongodb-atlas",
-		Image: "mongo:6.0",
-		Script: `echo "Initiating MongoDB Atlas logical backup..."
-
-if [ -z "$ATLAS_URI" ]; then
-  echo "Error: Missing ATLAS_URI environment variable."
-  echo "Please provide your Atlas connection string (e.g., mongodb+srv://user:pass@cluster.mongodb.net/)"
-  exit 1
-fi
-
-echo "Connecting to Atlas and streaming database dump..."
-
-# mongodump natively supports Atlas SRV records and gzipping to a single archive file
-mongodump --uri="$ATLAS_URI" --archive=/workspace/dump.archive --gzip
-
-echo "MongoDB Atlas dump completed successfully."
-`,
-	},
 }
 
 // EnsureBlueprints iterates through the defined Blueprints and applies them as ConfigMaps

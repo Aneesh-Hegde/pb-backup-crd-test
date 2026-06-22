@@ -55,9 +55,9 @@ spec:
               mountPath: /etc/garage.toml
               subPath: garage.toml
               readOnly: true
-            - name: meta-v1
+            - name: meta-v2
               mountPath: /var/lib/garage/meta
-            - name: data-v1
+            - name: data-v2
               mountPath: /var/lib/garage/data
       volumes:
         - name: config
@@ -65,14 +65,14 @@ spec:
             name: garage-config
   volumeClaimTemplates:
     - metadata:
-        name: meta-v1
+        name: meta-v2
       spec:
         accessModes: ["ReadWriteOnce"]
         resources:
           requests:
             storage: 1Gi
     - metadata:
-        name: data-v1
+        name: data-v2
       spec:
         accessModes: ["ReadWriteOnce"]
         resources:

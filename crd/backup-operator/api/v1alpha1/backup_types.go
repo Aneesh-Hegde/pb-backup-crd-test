@@ -12,7 +12,11 @@ type BackupSpec struct {
 	BucketName        string `json:"bucketName,omitempty"`
 	CredentialsSecret string `json:"credentialsSecret,omitempty"`
 	// +optional
-	SourcePVCName string `json:"sourcePVCName,omitempty"`
+	SourcePVCName string `json:"sourcePVCName"`
+	// +kubebuilder:validation:Optional
+	// ScratchSizeLimit caps the EmptyDir scratch space used during backup staging.
+	// Defaults to "2Gi" if unset.
+	ScratchSizeLimit string `json:"scratchSizeLimit,omitempty"`
 	// +kubebuilder:validation:Optional
 	Endpoint string `json:"endpoint,omitempty"`
 

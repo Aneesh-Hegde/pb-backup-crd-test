@@ -209,6 +209,11 @@ spec:
                 type: integer
               schedule:
                 type: string
+              scratchSizeLimit:
+                description: |-
+                  ScratchSizeLimit caps the EmptyDir scratch space used during backup staging.
+                  Defaults to "2Gi" if unset.
+                type: string
               sourcePVCName:
                 type: string
               targetApp:

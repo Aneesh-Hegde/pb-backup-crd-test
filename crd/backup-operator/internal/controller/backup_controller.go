@@ -221,39 +221,24 @@ aws s3api list-objects --bucket %s --endpoint-url %s | \
 `, backup.Spec.RetentionDays, backup.Spec.RetentionDays, bucketName, endpoint, bucketName, endpoint)
 
 	}
-
+	scratchSizeLimit := backup.Spec.ScratchSizeLimit
+	if scratchSizeLimit == "" {
+		scratchSizeLimit = "2Gi"
+	}
+	scratchQuantity, err := resource.ParseQuantity(scratchSizeLimit)
+	if err != nil {
+		meta.SetStatusCondition(&backup.Status.Conditions, metav1.Condition{
+			Type:    "Ready",
+			Status:  metav1.ConditionFalse,
+			Reason:  "InvalidSpec",
+			Message: fmt.Sprintf("Invalid scratchSizeLimit %q: %v", scratchSizeLimit, err),
+		})
+		r.Status().Update(ctx, &backup)
+		return ctrl.Result{}, nil // don't requeue; user must fix the spec
+	}
 	// FINAL COMBINED SCRIPT
 	finalAwsScript := fmt.Sprintf("%s\n%s\necho 'Backup pipeline finalized successfully!'", s3UploadLogic, retentionLogic)
-	//check for volume mount
-	volumes := []corev1.Volume{
-		{
-			Name: "scratch-volume",
-			VolumeSource: corev1.VolumeSource{
-				EmptyDir: &corev1.EmptyDirVolumeSource{},
-			},
-		},
-	}
 
-	initVolumeMounts := []corev1.VolumeMount{
-		{Name: "scratch-volume", MountPath: "/workspace"},
-	}
-
-	// Conditionally add the PVC volume ONLY if the user specified one
-	if backup.Spec.SourcePVCName != "" {
-		volumes = append(volumes, corev1.Volume{
-			Name: "data-volume",
-			VolumeSource: corev1.VolumeSource{
-				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
-					ClaimName: backup.Spec.SourcePVCName,
-				},
-			},
-		})
-		initVolumeMounts = append(initVolumeMounts, corev1.VolumeMount{
-			Name:      "data-volume",
-			MountPath: mountPath,
-			ReadOnly:  true,
-		})
-	}
 	// DEFINE THE CRONJOB
 	cronJobName := fmt.Sprintf("%s-cronjob", backup.Name)
 	timeZone := "Asia/Kolkata"
@@ -334,7 +319,9 @@ aws s3api list-objects --bucket %s --endpoint-url %s | \
 								{
 									Name: "scratch-volume",
 									VolumeSource: corev1.VolumeSource{
-										EmptyDir: &corev1.EmptyDirVolumeSource{},
+										EmptyDir: &corev1.EmptyDirVolumeSource{
+											SizeLimit: &scratchQuantity,
+										},
 									},
 								},
 							},
@@ -351,7 +338,7 @@ aws s3api list-objects --bucket %s --endpoint-url %s | \
 
 	// MANAGE THE CRONJOB LIFECYCLE
 	var existingCronJob batchv1.CronJob
-	err := r.Get(ctx, client.ObjectKey{Name: cronJobName, Namespace: backup.Namespace}, &existingCronJob)
+	err = r.Get(ctx, client.ObjectKey{Name: cronJobName, Namespace: backup.Namespace}, &existingCronJob)
 
 	if err != nil && apierrors.IsNotFound(err) {
 		logger.Info("Creating a new CronJob", "CronJob.Namespace", cronJob.Namespace, "CronJob.Name", cronJob.Name)
